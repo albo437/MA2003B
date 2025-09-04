@@ -4,6 +4,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
 from sklearn.impute import KNNImputer
+import statsmodels.api as sm
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, precision_recall_fscore_support, roc_curve, auc
+
 
 def create_variable_boxplot(variable_index, df_list, figsize=(15, 8)):
     """
@@ -155,6 +159,154 @@ def create_correlation_heatmap(variable_index, df_list,figsize=(12, 10)):
     print(f"Desviación estándar de correlaciones: {np.std(correlations):.3f}")
     print(f"Correlaciones > 0.8: {np.sum(correlations > 0.8)} de {len(correlations)} pares")
     print(f"Correlaciones < 0.5: {np.sum(correlations < 0.5)} de {len(correlations)} pares")
+
+def analyze_station_correlations(df_station, station_name, min_correlation=0.3, figsize=(12, 10)):
+    """
+    Analiza las correlaciones entre todas las variables de una estación específica.
+    
+    Parámetros:
+    -----------
+    df_station : pd.DataFrame
+        DataFrame de una estación con todas sus variables.
+    station_name : str
+        Nombre de la estación para títulos y reportes.
+    min_correlation : float
+        Umbral mínimo de correlación para considerar significativa.
+    figsize : tuple
+        Tamaño de la figura del heatmap.
+    
+    Retorna:
+    --------
+    dict : Diccionario con matrices de correlación y análisis estadístico.
+    """
+    
+    print(f"🔗" * 20)
+    print(f"ANÁLISIS DE CORRELACIONES INTRA-ESTACIÓN: {station_name}")
+    print(f"🔗" * 20)
+    
+    # Obtener solo las columnas numéricas (excluir Date)
+    numeric_cols = df_station.select_dtypes(include=[np.number]).columns.tolist()
+    
+    if len(numeric_cols) < 2:
+        print(f"❌ No hay suficientes variables numéricas para análisis de correlación")
+        return {}
+    
+    print(f"📊 Variables analizadas: {len(numeric_cols)}")
+    print(f"📈 Datos disponibles: {len(df_station)} registros")
+    
+    # Calcular matriz de correlación
+    correlation_matrix = df_station[numeric_cols].corr()
+    
+    # Crear el heatmap
+    plt.figure(figsize=figsize)
+    
+    # Máscara para el triángulo superior (opcional, para no duplicar información)
+    mask = np.triu(np.ones_like(correlation_matrix, dtype=bool))
+    
+    # Crear heatmap con seaborn
+    sns.heatmap(correlation_matrix, 
+                annot=True, 
+                cmap='RdBu_r', 
+                center=0,
+                square=True,
+                mask=mask,
+                cbar_kws={"shrink": .8},
+                fmt='.2f',
+                linewidths=0.5)
+    
+    plt.title(f'Matriz de Correlaciones - Estación {station_name}\n'
+              f'({len(numeric_cols)} variables, {len(df_station)} observaciones)', 
+              fontsize=14, fontweight='bold', pad=20)
+    
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    plt.show()
+    
+    # Análisis de correlaciones significativas
+    print(f"\n📋 ANÁLISIS DE CORRELACIONES SIGNIFICATIVAS (|r| ≥ {min_correlation}):")
+    print("=" * 80)
+    
+    significant_correlations = []
+    
+    # Buscar correlaciones significativas
+    for i in range(len(correlation_matrix.columns)):
+        for j in range(i+1, len(correlation_matrix.columns)):
+            var1 = correlation_matrix.columns[i]
+            var2 = correlation_matrix.columns[j]
+            corr_value = correlation_matrix.iloc[i, j]
+            
+            if abs(corr_value) >= min_correlation:
+                # Limpiar nombres de variables (quitar prefijo de estación)
+                clean_var1 = var1.split(' ', 1)[1] if ' ' in var1 else var1
+                clean_var2 = var2.split(' ', 1)[1] if ' ' in var2 else var2
+                
+                significant_correlations.append({
+                    'Variable_1': clean_var1,
+                    'Variable_2': clean_var2,
+                    'Correlacion': round(corr_value, 3),
+                    'Fuerza': categorize_correlation(abs(corr_value)),
+                    'Direccion': 'Positiva' if corr_value > 0 else 'Negativa'
+                })
+    
+    if significant_correlations:
+        # Ordenar por valor absoluto de correlación
+        significant_df = pd.DataFrame(significant_correlations)
+        significant_df = significant_df.sort_values('Correlacion', key=abs, ascending=False)
+        
+        print(f"Se encontraron {len(significant_correlations)} correlaciones significativas:")
+        print(significant_df.to_string(index=False))
+        
+        # Estadísticas por categoría
+        print(f"\n📊 DISTRIBUCIÓN POR FUERZA DE CORRELACIÓN:")
+        strength_counts = significant_df['Fuerza'].value_counts()
+        for strength, count in strength_counts.items():
+            print(f"  • {strength}: {count} correlaciones")
+        
+        # Top correlaciones
+        print(f"\n🏆 TOP 5 CORRELACIONES MÁS FUERTES:")
+        print("-" * 50)
+        for _, row in significant_df.head(5).iterrows():
+            print(f"  {row['Variable_1']} ↔ {row['Variable_2']}: "
+                  f"r = {row['Correlacion']:.3f} ({row['Fuerza']}, {row['Direccion']})")
+    
+    else:
+        print(f"❌ No se encontraron correlaciones significativas con |r| ≥ {min_correlation}")
+        print(f"💡 Considera reducir el umbral (ej. 0.2) para detectar correlaciones más débiles")
+    
+    # Estadísticas generales
+    print(f"\n📈 ESTADÍSTICAS GENERALES:")
+    print("-" * 40)
+    print(f"  • Correlación promedio (valor absoluto): {correlation_matrix.abs().mean().mean():.3f}")
+    print(f"  • Correlación máxima: {correlation_matrix.abs().max().max():.3f}")
+    print(f"  • Variables más correlacionadas con otras:")
+    
+    # Variables con mayor correlación promedio
+    avg_correlations = correlation_matrix.abs().mean().sort_values(ascending=False)
+    for i, (var, avg_corr) in enumerate(avg_correlations.head(3).items()):
+        clean_var = var.split(' ', 1)[1] if ' ' in var else var
+        print(f"    {i+1}. {clean_var}: {avg_corr:.3f}")
+    
+    return {
+        'correlation_matrix': correlation_matrix,
+        'significant_correlations': significant_correlations if significant_correlations else [],
+        'station_name': station_name,
+        'n_variables': len(numeric_cols),
+        'n_observations': len(df_station)
+    }
+
+def categorize_correlation(abs_corr):
+    """Categoriza la fuerza de una correlación basada en su valor absoluto."""
+    if abs_corr >= 0.8:
+        return "Muy Fuerte"
+    elif abs_corr >= 0.6:
+        return "Fuerte"
+    elif abs_corr >= 0.4:
+        return "Moderada"
+    elif abs_corr >= 0.2:
+        return "Débil"
+    else:
+        return "Muy Débil"
 
 def correct_outliers(dfs_dict, method='rolling_zscore', window_size=24, z_threshold=5, verbose=True):
     """
@@ -789,7 +941,7 @@ def analyze_wind_sectors(dfs_estaciones_clean, contaminant_idx, wind_dir_idx,
         sector_labels = [f"{int(bins[i])}°-{int(bins[i+1])}°" for i in range(n_sectors)]
         data["Sector"] = pd.cut(data[wind_col] % 360, bins=bins, labels=sector_labels, include_lowest=True)
 
-        # Calcular medias por sector y media global
+        # Calcular ultimo cuartil por sector y media global
         sector_means = data.groupby("Sector", observed = False)[contaminant_col].mean()
         global_mean = data[contaminant_col].mean()
 
@@ -870,3 +1022,185 @@ def analyze_wind_sectors(dfs_estaciones_clean, contaminant_idx, wind_dir_idx,
         print("   Considera reducir el threshold_factor para detectar patrones más sutiles")
 
     return results
+
+def logistic_model_station(
+    df,
+    contaminant_idx,
+    wind_dir_idx,
+    wind_speed_idx,
+    rh_idx,
+    temp_idx,
+    threshold=None
+):
+    """
+    Ajusta un modelo de regresión logística para predecir
+    cuándo la concentración de un contaminante (ej. NO) supera un valor crítico.
+
+    Parámetros
+    ----------
+    df : DataFrame (estación individual)
+    contaminant_idx : int, índice de columna del contaminante
+    wind_dir_idx : int, índice de columna de dirección del viento (grados)
+    wind_speed_idx : int, índice de columna de velocidad del viento
+    rh_idx : int, índice de columna de humedad relativa
+    temp_idx : int, índice de columna de temperatura
+    threshold : float, umbral crítico (si None, se usa percentil 90)
+
+    Retorna
+    -------
+    modelo : fitted model de statsmodels
+    report : clasificación en test set
+    """
+    contaminant_col = df.columns[contaminant_idx]
+    wind_col = df.columns[wind_dir_idx]
+    speed_col = df.columns[wind_speed_idx]
+    rh_col = df.columns[rh_idx]
+    temp_col = df.columns[temp_idx]
+
+    data = df[[contaminant_col, wind_col, speed_col, rh_col, temp_col]].dropna()
+
+    if data.empty:
+        raise ValueError("No hay datos suficientes en esta estación.")
+
+    # Definir umbral crítico
+    if threshold is None:
+        threshold = np.percentile(data[contaminant_col], 90)
+    print(threshold)
+
+    data["Critical"] = (data[contaminant_col] >= threshold).astype(int)
+
+    # Codificar dirección del viento
+    wind_rad = np.deg2rad(data[wind_col] % 360)
+    data["Wind_sin"] = np.sin(wind_rad)
+    data["Wind_cos"] = np.cos(wind_rad)
+
+    # Definir X y Y
+    X = data[["Wind_sin", "Wind_cos", speed_col, rh_col, temp_col]]
+    y = data["Critical"]
+
+    # Train-test split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42, stratify=y
+    )
+
+    # Ajustar modelo logístico
+    X_train_const = sm.add_constant(X_train)
+    model = sm.Logit(y_train, X_train_const).fit(disp=False)
+
+    # Evaluación
+    X_test_const = sm.add_constant(X_test)
+    y_pred = (model.predict(X_test_const) >= 0.15).astype(int)
+
+    report = classification_report(y_test, y_pred, output_dict=True)
+
+    return model, report
+
+def analyze_logistic_model(model, report):
+    """
+    Analiza un modelo logístico ajustado con statsmodels.Logit.
+    
+    Parámetros
+    ----------
+    model : fitted model
+        Modelo entrenado de statsmodels.Logit.
+    report : dict
+        Reporte de clasificación de sklearn (classification_report con output_dict=True).
+    
+    Retorna
+    -------
+    summary_dict : dict
+        Resumen con odds ratios, significancia y métricas de clasificación.
+    """
+    print("\n📊 RESUMEN DEL MODELO LOGÍSTICO")
+    print("=" * 80)
+    print(model.summary())  # Incluye coeficientes, errores estándar, z y p-values
+    
+    # --- Odds Ratios ---
+    params = model.params
+    conf = model.conf_int()
+    conf['OR'] = params
+    conf.columns = ['2.5%', '97.5%', 'OR']
+    odds_ratios = np.exp(conf)
+    
+    print("\n📈 ODDS RATIOS (exp(coeficientes))")
+    print("=" * 80)
+    print(odds_ratios)
+    
+    # --- Reporte de clasificación ---
+    print("\n🎯 DESEMPEÑO EN TEST SET")
+    print("=" * 80)
+    df_report = pd.DataFrame(report).T
+    print(df_report)
+    
+    # --- Interpretación rápida ---
+    print("\n🧐 INTERPRETACIÓN DE SIGNIFICANCIA")
+    print("=" * 80)
+    sig_vars = model.pvalues[model.pvalues < 0.05].index.tolist()
+    if sig_vars:
+        print(f"Variables con significancia estadística (p < 0.05): {sig_vars}")
+    else:
+        print("⚠️ Ninguna variable resultó significativa al nivel 0.05")
+    
+    # Guardar resumen en dict
+    summary_dict = {
+        "odds_ratios": odds_ratios,
+        "classification_report": df_report,
+        "significant_vars": sig_vars
+    }
+    return summary_dict
+
+def recalibrate_threshold(y_true, y_probs, step=0.05):
+    """
+    Explora diferentes umbrales de decisión para un modelo logístico.
+    
+    Parámetros
+    ----------
+    y_true : array-like
+        Valores reales (0/1).
+    y_probs : array-like
+        Probabilidades predichas por el modelo.
+    step : float
+        Tamaño del paso en el barrido de umbrales.
+        
+    Retorna
+    -------
+    results_df : DataFrame
+        Resultados con precision, recall, f1 para cada umbral.
+    """
+    import pandas as pd
+    
+    thresholds = np.arange(0.05, 1.0, step)
+    metrics = []
+
+    for t in thresholds:
+        y_pred = (y_probs >= t).astype(int)
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            y_true, y_pred, average="binary", zero_division=0
+        )
+        metrics.append([t, precision, recall, f1])
+
+    results_df = pd.DataFrame(metrics, columns=["Threshold", "Precision", "Recall", "F1"])
+    return results_df
+
+def plot_recalibration(results_df):
+    """
+    Grafica precision, recall y F1-score contra el umbral de decisión.
+    """
+    plt.figure(figsize=(10, 6))
+    plt.plot(results_df["Threshold"], results_df["Precision"], label="Precision", marker="o")
+    plt.plot(results_df["Threshold"], results_df["Recall"], label="Recall", marker="o")
+    plt.plot(results_df["Threshold"], results_df["F1"], label="F1-score", marker="o")
+
+    plt.axvline(0.5, color="red", linestyle="--", label="Umbral clásico 0.5")
+    plt.xlabel("Umbral de decisión")
+    plt.ylabel("Métrica")
+    plt.title("Recalibración del Umbral de Decisión (Modelo Logístico)")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
+
+
+
+
