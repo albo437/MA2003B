@@ -1026,10 +1026,10 @@ def analyze_wind_sectors(dfs_estaciones_clean, contaminant_idx, wind_dir_idx,
 def logistic_model_station(
     df,
     contaminant_idx,
-    wind_dir_idx,
-    wind_speed_idx,
-    rh_idx,
-    temp_idx,
+    wind_dir_idx=None,
+    wind_speed_idx=None,
+    rh_idx=None,
+    temp_idx=None,
     threshold=None
 ):
     """
@@ -1040,10 +1040,10 @@ def logistic_model_station(
     ----------
     df : DataFrame (estación individual)
     contaminant_idx : int, índice de columna del contaminante
-    wind_dir_idx : int, índice de columna de dirección del viento (grados)
-    wind_speed_idx : int, índice de columna de velocidad del viento
-    rh_idx : int, índice de columna de humedad relativa
-    temp_idx : int, índice de columna de temperatura
+    wind_dir_idx : int or None, índice de columna de dirección del viento (grados)
+    wind_speed_idx : int or None, índice de columna de velocidad del viento
+    rh_idx : int or None, índice de columna de humedad relativa
+    temp_idx : int or None, índice de columna de temperatura
     threshold : float, umbral crítico (si None, se usa percentil 90)
 
     Retorna
@@ -1052,31 +1052,79 @@ def logistic_model_station(
     report : clasificación en test set
     """
     contaminant_col = df.columns[contaminant_idx]
-    wind_col = df.columns[wind_dir_idx]
-    speed_col = df.columns[wind_speed_idx]
-    rh_col = df.columns[rh_idx]
-    temp_col = df.columns[temp_idx]
+    
+    # Lista para almacenar las columnas que vamos a usar
+    feature_cols = []
+    feature_names = []
+    
+    # Lista para almacenar solo las columnas que no son None
+    data_cols = [contaminant_col]
+    
+    # Agregar variables solo si no son None
+    if wind_dir_idx is not None:
+        wind_col = df.columns[wind_dir_idx]
+        data_cols.append(wind_col)
+        # Para dirección del viento, usaremos componentes sin/cos
+        feature_names.extend(["Wind_sin", "Wind_cos"])
+    
+    if wind_speed_idx is not None:
+        speed_col = df.columns[wind_speed_idx]
+        data_cols.append(speed_col)
+        feature_cols.append(speed_col)
+        feature_names.append("Wind_Speed")
+    
+    if rh_idx is not None:
+        rh_col = df.columns[rh_idx]
+        data_cols.append(rh_col)
+        feature_cols.append(rh_col)
+        feature_names.append("Humidity")
+    
+    if temp_idx is not None:
+        temp_col = df.columns[temp_idx]
+        data_cols.append(temp_col)
+        feature_cols.append(temp_col)
+        feature_names.append("Temperature")
 
-    data = df[[contaminant_col, wind_col, speed_col, rh_col, temp_col]].dropna()
+    # Verificar que tenemos al menos una variable predictora
+    if len(data_cols) == 1:  # Solo tenemos el contaminante
+        raise ValueError("Debe proporcionar al menos una variable predictora (índice no None)")
+
+    # Extraer datos solo para las columnas que vamos a usar
+    data = df[data_cols].dropna()
 
     if data.empty:
-        raise ValueError("No hay datos suficientes en esta estación.")
+        raise ValueError("No hay datos suficientes en esta estación después de eliminar NaN.")
 
     # Definir umbral crítico
     if threshold is None:
         threshold = np.percentile(data[contaminant_col], 90)
-    print(threshold)
+    print(f"Umbral crítico: {threshold:.3f}")
 
     data["Critical"] = (data[contaminant_col] >= threshold).astype(int)
 
-    # Codificar dirección del viento
-    wind_rad = np.deg2rad(data[wind_col] % 360)
-    data["Wind_sin"] = np.sin(wind_rad)
-    data["Wind_cos"] = np.cos(wind_rad)
-
-    # Definir X y Y
-    X = data[["Wind_sin", "Wind_cos", speed_col, rh_col, temp_col]]
+    # Construir matriz de características X
+    X_data = []
+    
+    # Codificar dirección del viento si está presente
+    if wind_dir_idx is not None:
+        wind_rad = np.deg2rad(data[wind_col] % 360)
+        X_data.append(np.sin(wind_rad))  # Wind_sin
+        X_data.append(np.cos(wind_rad))  # Wind_cos
+    
+    # Agregar otras variables si están presentes
+    for col in feature_cols:
+        X_data.append(data[col].values)
+    
+    # Crear DataFrame de características
+    X = pd.DataFrame(np.column_stack(X_data), columns=feature_names, index=data.index)
     y = data["Critical"]
+
+    # Verificar que tenemos variabilidad en la variable objetivo
+    if y.nunique() < 2:
+        raise ValueError("La variable objetivo no tiene variabilidad (todos los valores son iguales)")
+
+    print(f"Variables utilizadas en el modelo: {feature_names}")
+    print(f"Distribución de la variable objetivo: {y.value_counts().to_dict()}")
 
     # Train-test split
     X_train, X_test, y_train, y_test = train_test_split(
