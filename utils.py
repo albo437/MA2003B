@@ -1030,7 +1030,8 @@ def logistic_model_station(
     wind_speed_idx=None,
     rh_idx=None,
     temp_idx=None,
-    threshold=None
+    threshold=None,
+    include_hour_features=True
 ):
     """
     Ajusta un modelo de regresión logística para predecir
@@ -1045,6 +1046,7 @@ def logistic_model_station(
     rh_idx : int or None, índice de columna de humedad relativa
     temp_idx : int or None, índice de columna de temperatura
     threshold : float, umbral crítico (si None, se usa percentil 90)
+    include_hour_features : bool, si incluir características de hora (default=True)
 
     Retorna
     -------
@@ -1085,6 +1087,16 @@ def logistic_model_station(
         feature_cols.append(temp_col)
         feature_names.append("Temperature")
 
+    # Agregar características de hora
+    hour_cols = []
+    if include_hour_features:
+        hour_cols = [col for col in df.columns if col.startswith('hour_')]
+        if hour_cols:
+            data_cols.extend(hour_cols)
+            feature_cols.extend(hour_cols)
+            feature_names.extend([f"Hour_{col.split('_')[1]}" for col in hour_cols])
+            print(f"🕒 Agregadas {len(hour_cols)} características de hora")
+
     # Verificar que tenemos al menos una variable predictora
     if len(data_cols) == 1:  # Solo tenemos el contaminante
         raise ValueError("Debe proporcionar al menos una variable predictora (índice no None)")
@@ -1111,9 +1123,15 @@ def logistic_model_station(
         X_data.append(np.sin(wind_rad))  # Wind_sin
         X_data.append(np.cos(wind_rad))  # Wind_cos
     
-    # Agregar otras variables si están presentes
+    # Agregar otras variables meteorológicas si están presentes
     for col in feature_cols:
-        X_data.append(data[col].values)
+        if col not in hour_cols:  # Evitar duplicar las columnas de hora
+            X_data.append(data[col].values)
+    
+    # Agregar características de hora al final
+    if include_hour_features and hour_cols:
+        for hour_col in hour_cols:
+            X_data.append(data[hour_col].values)
     
     # Crear DataFrame de características
     X = pd.DataFrame(np.column_stack(X_data), columns=feature_names, index=data.index)
